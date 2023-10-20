@@ -1,0 +1,30 @@
+version: 3
+
+tasks:
+  clean:
+    desc: Clean
+    cmds:
+      - rm -rf dist
+
+  build:
+    desc: Build
+    cmds:
+      - goreleaser --snapshot --clean
+
+  build-single:
+    desc: Build (single)
+    cmds:
+      - goreleaser build --snapshot --clean --single-target --output dist/ghr-installer
+
+  dependencyUpdates:
+    desc: Show dependency updates
+    cmds:
+      - go mod download
+      - go mod tidy
+      - go list -u -m -json all | go run github.com/psampaz/go-mod-outdated@v0.9.0 -update -direct
+
+  test:
+    desc: Test
+    deps: [ build-single ]
+    cmds:
+      - dist/ghr-installer install caddyserver/caddy@2.7.5
