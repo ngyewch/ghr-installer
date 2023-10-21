@@ -52,7 +52,7 @@ func Install(packageSpec string) error {
 		}
 	}
 	if packageAsset == nil {
-		return fmt.Errorf("could not locate package")
+		return fmt.Errorf("could not locate package for this os/arch")
 	}
 
 	var checksumsAsset *github.ReleaseAsset
@@ -157,7 +157,7 @@ func matchPackageFilename(pkgSpec *PackageSpec, name string) (bool, string) {
 		runtime.GOARCH,
 	}
 	if runtime.GOARCH == "amd64" {
-		archClassifiers = append(archClassifiers, "64bit")
+		archClassifiers = append(archClassifiers, "64bit", "x64")
 	}
 	if !expecter.ExpectStrings(archClassifiers) {
 		return false, ""
@@ -181,6 +181,12 @@ func matchChecksumFilename(pkgSpec *PackageSpec, packageBaseName string, name st
 	// TODO always assume these patterns?
 	if name == "checksums.txt" {
 		return true, ""
+	}
+	if name == "SHASUMS256.txt" {
+		return true, "sha256"
+	}
+	if name == "SHASUMS512.txt" {
+		return true, "sha512"
 	}
 
 	matched, alg := func() (bool, string) {
