@@ -11,7 +11,21 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
+	"slices"
+)
+
+var (
+	allowedExts = []string{ // TODO other extensions?
+		".tar.gz",
+		".tar.bz2",
+		".tar.xz",
+		".tar",
+		".zip",
+		".rar",
+		".7z",
+	}
+	delims         = []string{".", "-", "_"}
+	hashAlgorithms = []string{"md5", "sha1", "sha224", "sha256", "sha384", "sha512"}
 )
 
 func Install(packageSpec string) error {
@@ -20,56 +34,40 @@ func Install(packageSpec string) error {
 		return err
 	}
 
-	osClassifier := runtime.GOOS     // TODO always assume runtime.GOOS?
-	archClassifier := runtime.GOARCH // TODO always assume runtime.GOARCH?
-	// TODO always assume this format?
-	// TODO always assume .tar.gz extension?
-	baseDownloadFilename := fmt.Sprintf("%s_%s_%s_%s",
-		pkgSpec.Project, // TODO always assume filename == projectName?
-		pkgSpec.Version, // TODO always assume no prefix?
-		osClassifier,
-		archClassifier,
-	)
-	downloadFilename := baseDownloadFilename + ".tar.gz"
-	downloadUrl := fmt.Sprintf("https://github.com/%s/%s/releases/download/v%s/%s",
-		pkgSpec.Owner,
-		pkgSpec.Project,
-		pkgSpec.Version, // TODO always assume 'v' prefix?
-		downloadFilename,
-	)
-
-	fmt.Println(downloadUrl)
-
 	githubClient := github.NewClient(nil)
 
 	var packageAsset *github.ReleaseAsset
+	var packageBaseName string
 	release, _, err := githubClient.Repositories.GetReleaseByTag(context.Background(), pkgSpec.Owner, pkgSpec.Project, fmt.Sprintf("v%s", pkgSpec.Version))
 	if err != nil {
 		return err
 	}
-	prefix := baseDownloadFilename + "."
 	for _, asset := range release.Assets {
-		if strings.HasPrefix(asset.GetName(), prefix) {
-			ext := asset.GetName()[len(baseDownloadFilename):]
-			if (ext == ".tar.gz") || (ext == ".zip") { // TODO other extensions?
-				fmt.Printf("[download] %s -> %s\n", asset.GetName(), asset.GetBrowserDownloadURL())
-				packageAsset = asset
-				break
-			}
+		match, baseName := matchPackageFilename(pkgSpec, asset.GetName())
+		if match {
+			packageBaseName = baseName
+			fmt.Printf("[download] %s -> %s\n", asset.GetName(), asset.GetBrowserDownloadURL())
+			packageAsset = asset
+			break
 		}
+	}
+	if packageAsset == nil {
+		return fmt.Errorf("could not locate package")
 	}
 
 	var checksumsAsset *github.ReleaseAsset
-	checksumsFilename := fmt.Sprintf("%s_%s_checksums.txt", pkgSpec.Project, pkgSpec.Version)
+	var checksumAlgorithm string
 	for _, asset := range release.Assets {
-		if asset.GetName() == checksumsFilename {
+		match, alg := matchChecksumFilename(pkgSpec, packageBaseName, asset.GetName())
+		if match {
 			fmt.Printf("[checksums] %s -> %s\n", asset.GetName(), asset.GetBrowserDownloadURL())
 			checksumsAsset = asset
+			checksumAlgorithm = alg
 			break
 		}
 	}
 
-	baseDirectory := filepath.Join("dist", "store")
+	baseDirectory := filepath.Join("tmp")
 
 	downloadDirectory := filepath.Join(baseDirectory, "downloads", "github.com", pkgSpec.Owner, pkgSpec.Project, pkgSpec.Version)
 
@@ -93,7 +91,26 @@ func Install(packageSpec string) error {
 				return err
 			}
 			if fileChecksumEntry != nil {
-				checksum, err := CalcFileChecksum(packagePath, "sha512")
+				alg := checksumAlgorithm
+				if alg == "" {
+					switch len(fileChecksumEntry.Checksum) {
+					case 16:
+						alg = "md5"
+					case 20:
+						alg = "sha1"
+					case 28:
+						alg = "sha224"
+					case 32:
+						alg = "sha256"
+					case 48:
+						alg = "sha384"
+					case 64:
+						alg = "sha512"
+					default:
+						return fmt.Errorf("could not auto-detect checksum algorithm")
+					}
+				}
+				checksum, err := CalcFileChecksum(packagePath, alg)
 				if err != nil {
 					return err
 				}
@@ -111,6 +128,113 @@ func Install(packageSpec string) error {
 	}
 
 	return nil
+}
+
+func matchPackageFilename(pkgSpec *PackageSpec, name string) (bool, string) {
+	expecter := NewExpecter(name)
+	if !expecter.ExpectString(pkgSpec.Project) { // TODO always assume projectName?
+		return false, ""
+	}
+	if !expecter.ExpectStrings(delims) {
+		return false, ""
+	}
+	if !expecter.ExpectStrings([]string{pkgSpec.Version, "v" + pkgSpec.Version}) {
+		return false, ""
+	}
+	if !expecter.ExpectStrings(delims) {
+		return false, ""
+	}
+	osClassifiers := []string{
+		runtime.GOOS,
+	}
+	if !expecter.ExpectStrings(osClassifiers) {
+		return false, ""
+	}
+	if !expecter.ExpectStrings(delims) {
+		return false, ""
+	}
+	archClassifiers := []string{
+		runtime.GOARCH,
+	}
+	if runtime.GOARCH == "amd64" {
+		archClassifiers = append(archClassifiers, "64bit")
+	}
+	if !expecter.ExpectStrings(archClassifiers) {
+		return false, ""
+	}
+	if !expecter.ExpectString(".") {
+		return false, ""
+	}
+
+	matched := expecter.Matched()
+	matched = matched[0 : len(matched)-1]
+
+	ext := name[len(matched):]
+	if !slices.Contains(allowedExts, ext) {
+		return false, ""
+	}
+
+	return true, matched
+}
+
+func matchChecksumFilename(pkgSpec *PackageSpec, packageBaseName string, name string) (bool, string) {
+	// TODO always assume these patterns?
+	if name == "checksums.txt" {
+		return true, ""
+	}
+
+	matched, alg := func() (bool, string) {
+		expecter := NewExpecter(name)
+		if !expecter.ExpectString(pkgSpec.Project) {
+			return false, ""
+		}
+		if !expecter.ExpectStrings(delims) {
+			return false, ""
+		}
+		if !expecter.ExpectStrings([]string{pkgSpec.Version, "v" + pkgSpec.Version}) {
+			return false, ""
+		}
+		if !expecter.ExpectStrings(delims) {
+			return false, ""
+		}
+		if !expecter.ExpectString("checksums.txt") {
+			return false, ""
+		}
+		return true, ""
+	}()
+	if matched {
+		return matched, alg
+	}
+
+	matched, alg = func() (bool, string) {
+		expecter := NewExpecter(name)
+		if !expecter.ExpectString(packageBaseName) {
+			return false, ""
+		}
+		if !expecter.ExpectStrings(delims) {
+			return false, ""
+		}
+		for _, hashAlgorithm := range hashAlgorithms {
+			if expecter.PeekString(hashAlgorithm) {
+				if !expecter.ExpectString(hashAlgorithm) {
+					return false, ""
+				}
+				if !expecter.ExpectString("sum.txt") {
+					return false, ""
+				}
+				if !expecter.IsEmpty() {
+					return false, ""
+				}
+				return true, hashAlgorithm
+			}
+		}
+		return false, ""
+	}()
+	if matched {
+		return matched, alg
+	}
+
+	return false, ""
 }
 
 func downloadAsset(asset *github.ReleaseAsset, downloadDirectory string) (string, error) {

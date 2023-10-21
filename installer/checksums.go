@@ -85,8 +85,12 @@ func CalcChecksum(r io.Reader, alg string) ([]byte, error) {
 		hasher = md5.New()
 	case "sha1":
 		hasher = sha1.New()
+	case "sha224":
+		hasher = sha256.New224()
 	case "sha256":
 		hasher = sha256.New()
+	case "sha384":
+		hasher = sha512.New384()
 	case "sha512":
 		hasher = sha512.New()
 	default:
