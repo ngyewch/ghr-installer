@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/google/go-github/v56/github"
+	"github.com/mholt/archiver/v4"
 	"io"
 	"net/http"
 	"os"
@@ -68,7 +69,9 @@ func Install(packageSpec string) error {
 		}
 	}
 
-	downloadDirectory := filepath.Join("dist", "downloads", "github.com", pkgSpec.Owner, pkgSpec.Project, pkgSpec.Version)
+	baseDirectory := filepath.Join("dist", "store")
+
+	downloadDirectory := filepath.Join(baseDirectory, "downloads", "github.com", pkgSpec.Owner, pkgSpec.Project, pkgSpec.Version)
 
 	if packageAsset != nil {
 		packagePath, err := downloadAsset(packageAsset, downloadDirectory)
@@ -98,6 +101,12 @@ func Install(packageSpec string) error {
 					return fmt.Errorf("checksum mismatch")
 				}
 			}
+		}
+
+		installDirectory := filepath.Join(baseDirectory, "installs", "github.com", pkgSpec.Owner, pkgSpec.Project, pkgSpec.Version)
+		err = unpack(packagePath, installDirectory)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -140,4 +149,86 @@ func downloadAsset(asset *github.ReleaseAsset, downloadDirectory string) (string
 	}
 
 	return downloadFile, nil
+}
+
+func unpack(archivePath string, installDirectory string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer func(f *os.File) {
+		_ = f.Close()
+	}(f)
+
+	var input io.Reader = f
+	format, input, err := archiver.Identify(archivePath, input)
+	if err != nil {
+		return err
+	}
+
+	decompressor, ok := format.(archiver.Decompressor)
+	if ok {
+		r, err := decompressor.OpenReader(input)
+		if err != nil {
+			return err
+		}
+		defer func(r io.ReadCloser) {
+			_ = r.Close()
+		}(r)
+
+		format2, input2, err := archiver.Identify("", r)
+		if err != nil {
+			return err
+		}
+
+		format = format2
+		input = input2
+	}
+
+	extractor, ok := format.(archiver.Extractor)
+	if !ok {
+		return fmt.Errorf("could not extract archive")
+	}
+	err = extractor.Extract(context.Background(), input, nil,
+		func(ctx context.Context, f archiver.File) error {
+			if f.IsDir() {
+				return nil
+			}
+
+			r, err := f.Open()
+			if err != nil {
+				return err
+			}
+			defer func(r io.ReadCloser) {
+				_ = r.Close()
+			}(r)
+
+			outputPath := filepath.Join(installDirectory, f.Name())
+			outputDirectory := filepath.Dir(outputPath)
+			err = os.MkdirAll(outputDirectory, 0755)
+			if err != nil {
+				return err
+			}
+
+			w, err := os.Create(outputPath)
+			if err != nil {
+				return err
+			}
+			defer func(w *os.File) {
+				_ = w.Close()
+			}(w)
+
+			_, err = io.Copy(w, r)
+			if err != nil {
+				return err
+			}
+
+			return nil
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
