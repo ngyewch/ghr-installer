@@ -31,3 +31,4 @@ tasks:
       - dist/ghr-installer install oauth2-proxy/oauth2-proxy@7.5.1
       - dist/ghr-installer install ory/hydra@2.1.2
       - dist/ghr-installer install jdxcode/rtx@2023.10.2
+      - dist/ghr-installer install prometheus/prometheus@2.47.2

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 )
 
 var (
@@ -182,11 +183,16 @@ func matchChecksumFilename(pkgSpec *PackageSpec, packageBaseName string, name st
 	if name == "checksums.txt" {
 		return true, ""
 	}
-	if name == "SHASUMS256.txt" {
+	if strings.EqualFold(name, "SHASUMS256.txt") {
 		return true, "sha256"
 	}
-	if name == "SHASUMS512.txt" {
+	if strings.EqualFold(name, "SHASUMS512.txt") {
 		return true, "sha512"
+	}
+	for _, hashAlgorithm := range hashAlgorithms {
+		if strings.EqualFold(name, fmt.Sprintf("%ssums.txt", hashAlgorithm)) {
+			return true, hashAlgorithm
+		}
 	}
 
 	matched, alg := func() (bool, string) {
@@ -321,7 +327,28 @@ func unpack(archivePath string, installDirectory string) error {
 	}
 	err = extractor.Extract(context.Background(), input, nil,
 		func(ctx context.Context, f archiver.File) error {
+			if f.LinkTarget != "" {
+				outputPath := filepath.Join(installDirectory, f.Name())
+				outputDirectory := filepath.Dir(outputPath)
+				err = os.MkdirAll(outputDirectory, 0755)
+				if err != nil {
+					return err
+				}
+
+				err = os.Symlink(f.LinkTarget, outputPath)
+				if err != nil {
+					return err
+				}
+
+				return nil
+			}
+
 			if f.IsDir() {
+				err = os.MkdirAll(f.Name(), f.Mode())
+				if err != nil {
+					return err
+				}
+
 				return nil
 			}
 
@@ -340,7 +367,7 @@ func unpack(archivePath string, installDirectory string) error {
 				return err
 			}
 
-			w, err := os.Create(outputPath)
+			w, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE, f.Mode())
 			if err != nil {
 				return err
 			}
