@@ -15,9 +15,14 @@ var (
 )
 
 func install(cmd *cobra.Command, args []string) error {
+	baseDirectory, err := cmd.Flags().GetString("base-directory")
+	if err != nil {
+		return err
+	}
+
 	packageSpec := args[0]
 
-	err := installer.Install(packageSpec)
+	err = installer.Install(baseDirectory, packageSpec)
 	if err != nil {
 		return err
 	}
@@ -27,4 +32,11 @@ func install(cmd *cobra.Command, args []string) error {
 
 func init() {
 	rootCmd.AddCommand(installCmd)
+
+	installCmd.Flags().String("base-directory", "", "base directory (REQUIRED)")
+
+	err := installCmd.MarkFlagRequired("base-directory")
+	if err != nil {
+		panic(err)
+	}
 }

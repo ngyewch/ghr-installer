@@ -11,6 +11,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -60,6 +61,8 @@ func ReadFileChecksums(r io.Reader) (*FileChecksums, error) {
 func (checksums *FileChecksums) GetEntry(filename string) *FileChecksum {
 	for _, entry := range checksums.Entries {
 		if entry.Filename == filename {
+			return entry
+		} else if filepath.Dir(entry.Filename) == "." && filepath.Base(entry.Filename) == filename {
 			return entry
 		}
 	}

@@ -29,7 +29,7 @@ var (
 	hashAlgorithms = []string{"md5", "sha1", "sha224", "sha256", "sha384", "sha512"}
 )
 
-func Install(packageSpec string) error {
+func Install(baseDirectory string, packageSpec string) error {
 	pkgSpec, err := ParsePackageSpec(packageSpec)
 	if err != nil {
 		return err
@@ -47,7 +47,6 @@ func Install(packageSpec string) error {
 		match, baseName := matchPackageFilename(pkgSpec, asset.GetName())
 		if match {
 			packageBaseName = baseName
-			fmt.Printf("[download] %s -> %s\n", asset.GetName(), asset.GetBrowserDownloadURL())
 			packageAsset = asset
 			break
 		}
@@ -61,25 +60,22 @@ func Install(packageSpec string) error {
 	for _, asset := range release.Assets {
 		match, alg := matchChecksumFilename(pkgSpec, packageBaseName, asset.GetName())
 		if match {
-			fmt.Printf("[checksums] %s -> %s\n", asset.GetName(), asset.GetBrowserDownloadURL())
 			checksumsAsset = asset
 			checksumAlgorithm = alg
 			break
 		}
 	}
 
-	baseDirectory := filepath.Join("tmp")
-
 	downloadDirectory := filepath.Join(baseDirectory, "downloads", "github.com", pkgSpec.Owner, pkgSpec.Project, pkgSpec.Version)
 
 	if packageAsset != nil {
-		packagePath, err := downloadAsset(packageAsset, downloadDirectory)
+		packagePath, err := downloadAsset(pkgSpec, "package", packageAsset, downloadDirectory)
 		if err != nil {
 			return err
 		}
 
 		if checksumsAsset != nil {
-			fileChecksumsPath, err := downloadAsset(checksumsAsset, downloadDirectory)
+			fileChecksumsPath, err := downloadAsset(pkgSpec, "checksums", checksumsAsset, downloadDirectory)
 			if err != nil {
 				return err
 			}
@@ -111,6 +107,7 @@ func Install(packageSpec string) error {
 						return fmt.Errorf("could not auto-detect checksum algorithm")
 					}
 				}
+				fmt.Printf("[%s] comparing checksums...\n", packageSpec)
 				checksum, err := CalcFileChecksum(packagePath, alg)
 				if err != nil {
 					return err
@@ -118,9 +115,12 @@ func Install(packageSpec string) error {
 				if !bytes.Equal(checksum, fileChecksumEntry.Checksum) {
 					return fmt.Errorf("checksum mismatch")
 				}
+			} else {
+				return fmt.Errorf("could not find checksum entry")
 			}
 		}
 
+		fmt.Printf("[%s] installing...\n", packageSpec)
 		installDirectory := filepath.Join(baseDirectory, "installs", "github.com", pkgSpec.Owner, pkgSpec.Project, pkgSpec.Version)
 		err = unpack(packagePath, installDirectory)
 		if err != nil {
@@ -249,7 +249,7 @@ func matchChecksumFilename(pkgSpec *PackageSpec, packageBaseName string, name st
 	return false, ""
 }
 
-func downloadAsset(asset *github.ReleaseAsset, downloadDirectory string) (string, error) {
+func downloadAsset(packageSpec *PackageSpec, assetType string, asset *github.ReleaseAsset, downloadDirectory string) (string, error) {
 	err := os.MkdirAll(downloadDirectory, 0755)
 	if err != nil {
 		return "", err
@@ -258,10 +258,13 @@ func downloadAsset(asset *github.ReleaseAsset, downloadDirectory string) (string
 	downloadFile := filepath.Join(downloadDirectory, asset.GetName())
 	_, err = os.Stat(downloadFile)
 	if err == nil {
-		fmt.Printf("skipping %s...\n", asset.GetName())
+		fmt.Printf("[%s] %s already downloaded...\n", packageSpec, assetType)
+		return downloadFile, nil
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
+
+	fmt.Printf("[%s] downloading %s (%s)...\n", packageSpec, assetType, asset.GetBrowserDownloadURL())
 
 	httpResponse, err := http.Get(asset.GetBrowserDownloadURL())
 	if err != nil {
@@ -344,7 +347,8 @@ func unpack(archivePath string, installDirectory string) error {
 			}
 
 			if f.IsDir() {
-				err = os.MkdirAll(f.Name(), f.Mode())
+				outputPath := filepath.Join(installDirectory, f.Name())
+				err = os.MkdirAll(outputPath, f.Mode())
 				if err != nil {
 					return err
 				}

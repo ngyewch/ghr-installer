@@ -36,3 +36,7 @@ func ParsePackageSpec(packageSpec string) (*PackageSpec, error) {
 		Version: version,
 	}, nil
 }
+
+func (pkgSpec *PackageSpec) String() string {
+	return fmt.Sprintf("%s/%s@%s", pkgSpec.Owner, pkgSpec.Project, pkgSpec.Version)
+}
