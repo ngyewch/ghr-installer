@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"github.com/google/go-github/v56/github"
 	"github.com/ngyewch/ghr-installer/installer"
 	"github.com/spf13/cobra"
@@ -31,9 +32,15 @@ func install(cmd *cobra.Command, args []string) error {
 	}
 	installer1 := installer.NewInstaller(baseDirectory, githubClient)
 
-	err = installer1.Install(packageSpec)
+	changed, err := installer1.Install(packageSpec)
 	if err != nil {
 		return err
+	}
+
+	if changed {
+		fmt.Printf("[%s] changed\n", packageSpec)
+		os.Exit(2)
+		return nil
 	}
 
 	return nil

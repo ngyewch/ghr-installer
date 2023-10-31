@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 )
 
-func unpack(archivePath string, installDirectory string) error {
+func unpack(archivePath string, installDirectory string) (int, error) {
 	f, err := os.Open(archivePath)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func(f *os.File) {
 		_ = f.Close()
@@ -21,14 +21,14 @@ func unpack(archivePath string, installDirectory string) error {
 	var input io.Reader = f
 	format, input, err := archiver.Identify(archivePath, input)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	decompressor, ok := format.(archiver.Decompressor)
 	if ok {
 		r, err := decompressor.OpenReader(input)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		defer func(r io.ReadCloser) {
 			_ = r.Close()
@@ -36,7 +36,7 @@ func unpack(archivePath string, installDirectory string) error {
 
 		format2, input2, err := archiver.Identify("", r)
 		if err != nil {
-			return err
+			return 0, err
 		}
 
 		format = format2
@@ -45,61 +45,70 @@ func unpack(archivePath string, installDirectory string) error {
 
 	extractor, ok := format.(archiver.Extractor)
 	if !ok {
-		return fmt.Errorf("could not extract archive")
+		return 0, fmt.Errorf("could not extract archive")
 	}
+	changes := 0
 	err = extractor.Extract(context.Background(), input, nil,
 		func(ctx context.Context, f archiver.File) error {
-			if f.LinkTarget != "" {
-				outputPath := filepath.Join(installDirectory, f.NameInArchive)
+			outputPath := filepath.Join(installDirectory, f.NameInArchive)
+			_, err = os.Stat(outputPath)
+			if os.IsNotExist(err) {
+				if f.LinkTarget != "" {
+					outputDirectory := filepath.Dir(outputPath)
+					err = os.MkdirAll(outputDirectory, 0755)
+					if err != nil {
+						return err
+					}
+
+					err = os.Symlink(f.LinkTarget, outputPath)
+					if err != nil {
+						return err
+					}
+
+					changes++
+					return nil
+				}
+
+				if f.IsDir() {
+					err = os.MkdirAll(outputPath, f.Mode())
+					if err != nil {
+						return err
+					}
+
+					changes++
+					return nil
+				}
+
+				r, err := f.Open()
+				if err != nil {
+					return err
+				}
+				defer func(r io.ReadCloser) {
+					_ = r.Close()
+				}(r)
+
 				outputDirectory := filepath.Dir(outputPath)
 				err = os.MkdirAll(outputDirectory, 0755)
 				if err != nil {
 					return err
 				}
 
-				err = os.Symlink(f.LinkTarget, outputPath)
+				w, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE, f.Mode())
+				if err != nil {
+					return err
+				}
+				defer func(w *os.File) {
+					_ = w.Close()
+				}(w)
+
+				_, err = io.Copy(w, r)
 				if err != nil {
 					return err
 				}
 
+				changes++
 				return nil
-			}
-
-			if f.IsDir() {
-				outputPath := filepath.Join(installDirectory, f.NameInArchive)
-				err = os.MkdirAll(outputPath, f.Mode())
-				if err != nil {
-					return err
-				}
-
-				return nil
-			}
-
-			r, err := f.Open()
-			if err != nil {
-				return err
-			}
-			defer func(r io.ReadCloser) {
-				_ = r.Close()
-			}(r)
-
-			outputPath := filepath.Join(installDirectory, f.NameInArchive)
-			outputDirectory := filepath.Dir(outputPath)
-			err = os.MkdirAll(outputDirectory, 0755)
-			if err != nil {
-				return err
-			}
-
-			w, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE, f.Mode())
-			if err != nil {
-				return err
-			}
-			defer func(w *os.File) {
-				_ = w.Close()
-			}(w)
-
-			_, err = io.Copy(w, r)
-			if err != nil {
+			} else if err != nil {
 				return err
 			}
 
@@ -107,8 +116,8 @@ func unpack(archivePath string, installDirectory string) error {
 		},
 	)
 	if err != nil {
-		return err
+		return changes, err
 	}
 
-	return nil
+	return changes, nil
 }

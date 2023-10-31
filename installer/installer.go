@@ -40,67 +40,69 @@ func NewInstaller(baseDirectory string, githubClient *github.Client) *Installer 
 	}
 }
 
-func (installer *Installer) Install(packageSpec string) error {
+func (installer *Installer) Install(packageSpec string) (bool, error) {
+	changed := false
+
 	pkgSpec, err := ParsePackageSpec(packageSpec)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	repositoryRelease, err := installer.getRepositoryRelease(pkgSpec)
+	repositoryRelease, metadataChanged, err := installer.getRepositoryRelease(pkgSpec)
 	if err != nil {
-		return err
+		return false, err
 	}
-	var packageAsset *github.ReleaseAsset
-	var packageBaseName string
-	for _, asset := range repositoryRelease.Assets {
-		match, baseName := matchPackageFilename(pkgSpec, asset.GetName())
-		if match {
-			packageBaseName = baseName
-			packageAsset = asset
-			break
+	changed = changed || metadataChanged
+
+	packageAsset, packageBaseName := func() (*github.ReleaseAsset, string) {
+		for _, asset := range repositoryRelease.Assets {
+			match, baseName := matchPackageFilename(pkgSpec, asset.GetName())
+			if match {
+				return asset, baseName
+			}
 		}
-	}
+		return nil, ""
+	}()
 	if packageAsset == nil {
-		return fmt.Errorf("could not locate package for this os/arch")
+		return changed, fmt.Errorf("could not locate package for this os/arch")
 	}
 
-	var checksumsAsset *github.ReleaseAsset
-	var checksumAlgorithm string
-	var checksumForContent bool
-	for _, asset := range repositoryRelease.Assets {
-		match, alg, isContentChecksum := matchChecksumFilename(pkgSpec, packageBaseName, asset.GetName())
-		if match {
-			checksumsAsset = asset
-			checksumAlgorithm = alg
-			checksumForContent = isContentChecksum
-			break
+	checksumsAsset, checksumAlgorithm, checksumForContent := func() (*github.ReleaseAsset, string, bool) {
+		for _, asset := range repositoryRelease.Assets {
+			match, alg, isContentChecksum := matchChecksumFilename(pkgSpec, packageBaseName, asset.GetName())
+			if match {
+				return asset, alg, isContentChecksum
+			}
 		}
-	}
+		return nil, "", false
+	}()
 
 	if packageAsset != nil {
-		packagePath, err := installer.downloadAsset(pkgSpec, "package", packageAsset)
+		packagePath, packageChanged, err := installer.downloadAsset(pkgSpec, "package", packageAsset)
 		if err != nil {
-			return err
+			return changed, err
 		}
+		changed = changed || packageChanged
 
 		checksums, err := func() (*Checksums, error) {
 			if checksumsAsset == nil {
 				return nil, nil
 			}
-			checksumsPath, err := installer.downloadAsset(pkgSpec, "checksums", checksumsAsset)
+			checksumsPath, checksumsChanged, err := installer.downloadAsset(pkgSpec, "checksums", checksumsAsset)
 			if err != nil {
 				return nil, err
 			}
+			changed = changed || checksumsChanged
 			return ReadFileChecksumsFromFile(checksumAlgorithm, checksumsPath)
 		}()
 		if err != nil {
-			return err
+			return changed, err
 		}
 
 		if (checksums != nil) && !checksumForContent {
 			count, err := checksums.Check(installer.downloadDirectory(pkgSpec))
 			if err != nil {
-				return err
+				return changed, err
 			}
 			if count > 0 {
 				fmt.Printf("[%s] %d checksums matched\n", pkgSpec, count)
@@ -109,17 +111,18 @@ func (installer *Installer) Install(packageSpec string) error {
 			}
 		}
 
-		fmt.Printf("[%s] installing...\n", packageSpec)
+		fmt.Printf("[%s] extracting...\n", packageSpec)
 		installDirectory := installer.installDirectory(pkgSpec)
-		err = unpack(packagePath, installDirectory)
+		fileCount, err := unpack(packagePath, installDirectory)
 		if err != nil {
-			return err
+			return changed, err
 		}
+		changed = changed || (fileCount > 0)
 
 		if (checksums != nil) && checksumForContent {
 			count, err := checksums.Check(installer.installDirectory(pkgSpec))
 			if err != nil {
-				return err
+				return changed, err
 			}
 			if count > 0 {
 				fmt.Printf("[%s] %d checksums matched\n", pkgSpec, count)
@@ -129,7 +132,7 @@ func (installer *Installer) Install(packageSpec string) error {
 		}
 	}
 
-	return nil
+	return changed, nil
 }
 
 func (installer *Installer) metadataDirectory(pkgSpec *PackageSpec) string {
@@ -144,61 +147,61 @@ func (installer *Installer) installDirectory(pkgSpec *PackageSpec) string {
 	return filepath.Join(installer.baseDirectory, "installs", "github.com", pkgSpec.Owner, pkgSpec.Project, pkgSpec.Version)
 }
 
-func (installer *Installer) getRepositoryRelease(pkgSpec *PackageSpec) (*github.RepositoryRelease, error) {
+func (installer *Installer) getRepositoryRelease(pkgSpec *PackageSpec) (*github.RepositoryRelease, bool, error) {
 	metadataDirectory := installer.metadataDirectory(pkgSpec)
 	err := os.MkdirAll(metadataDirectory, 0755)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	repositoryReleaseFile := filepath.Join(metadataDirectory, "repositoryRelease.json")
 	jsonBytes, err := os.ReadFile(repositoryReleaseFile)
 	if os.IsNotExist(err) {
 		repositoryRelease, _, err := installer.githubClient.Repositories.GetReleaseByTag(context.Background(), pkgSpec.Owner, pkgSpec.Project, fmt.Sprintf("v%s", pkgSpec.Version))
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		jsonBytes, err := json.MarshalIndent(repositoryRelease, "", "  ")
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		err = os.WriteFile(repositoryReleaseFile, jsonBytes, 0755)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		return repositoryRelease, nil
+		return repositoryRelease, true, nil
 	} else if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var repositoryRelease github.RepositoryRelease
 	err = json.Unmarshal(jsonBytes, &repositoryRelease)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return &repositoryRelease, nil
+	return &repositoryRelease, false, nil
 }
 
-func (installer *Installer) downloadAsset(pkgSpec *PackageSpec, assetType string, asset *github.ReleaseAsset) (string, error) {
+func (installer *Installer) downloadAsset(pkgSpec *PackageSpec, assetType string, asset *github.ReleaseAsset) (string, bool, error) {
 	downloadDirectory := installer.downloadDirectory(pkgSpec)
 
-	err := os.MkdirAll(downloadDirectory, 0755)
-	if err != nil {
-		return "", err
-	}
-
 	downloadFile := filepath.Join(downloadDirectory, asset.GetName())
-	_, err = os.Stat(downloadFile)
+	_, err := os.Stat(downloadFile)
 	if err == nil {
 		fmt.Printf("[%s] %s already downloaded...\n", pkgSpec, assetType)
-		return downloadFile, nil
+		return downloadFile, false, nil
 	} else if !os.IsNotExist(err) {
-		return "", err
+		return "", false, err
+	}
+
+	err = os.MkdirAll(downloadDirectory, 0755)
+	if err != nil {
+		return "", false, err
 	}
 
 	fmt.Printf("[%s] downloading %s (%s)...\n", pkgSpec, assetType, asset.GetBrowserDownloadURL())
 
 	httpResponse, err := http.Get(asset.GetBrowserDownloadURL())
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
@@ -206,7 +209,7 @@ func (installer *Installer) downloadAsset(pkgSpec *PackageSpec, assetType string
 
 	f, err := os.Create(downloadFile)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer func(f *os.File) {
 		_ = f.Close()
@@ -214,10 +217,10 @@ func (installer *Installer) downloadAsset(pkgSpec *PackageSpec, assetType string
 
 	_, err = io.Copy(f, httpResponse.Body)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
-	return downloadFile, nil
+	return downloadFile, true, nil
 }
 
 func matchPackageFilename(pkgSpec *PackageSpec, name string) (bool, string) {
