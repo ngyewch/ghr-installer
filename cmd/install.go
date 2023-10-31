@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"github.com/google/go-github/v56/github"
 	"github.com/ngyewch/ghr-installer/installer"
 	"github.com/spf13/cobra"
+	"os"
 )
 
 var (
@@ -22,7 +24,14 @@ func install(cmd *cobra.Command, args []string) error {
 
 	packageSpec := args[0]
 
-	err = installer.Install(baseDirectory, packageSpec)
+	githubClient := github.NewClient(nil)
+	githubToken := os.Getenv("GITHUB_TOKEN")
+	if githubToken != "" {
+		githubClient = githubClient.WithAuthToken(githubToken)
+	}
+	installer1 := installer.NewInstaller(baseDirectory, githubClient)
+
+	err = installer1.Install(packageSpec)
 	if err != nil {
 		return err
 	}

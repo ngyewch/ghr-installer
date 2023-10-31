@@ -2,6 +2,7 @@ package installer
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -15,16 +16,17 @@ import (
 	"strings"
 )
 
-type FileChecksum struct {
+type ChecksumEntry struct {
 	Checksum []byte
 	Filename string
 }
 
-type FileChecksums struct {
-	Entries []*FileChecksum
+type Checksums struct {
+	Algorithm string
+	Entries   []*ChecksumEntry
 }
 
-func ReadFileChecksumsFromFile(path string) (*FileChecksums, error) {
+func ReadFileChecksumsFromFile(algorithm string, path string) (*Checksums, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -33,11 +35,13 @@ func ReadFileChecksumsFromFile(path string) (*FileChecksums, error) {
 		_ = f.Close()
 	}(f)
 
-	return ReadFileChecksums(f)
+	return ReadFileChecksums(algorithm, f)
 }
 
-func ReadFileChecksums(r io.Reader) (*FileChecksums, error) {
-	var fileChecksums FileChecksums
+func ReadFileChecksums(algorithm string, r io.Reader) (*Checksums, error) {
+	checksums := &Checksums{
+		Algorithm: algorithm,
+	}
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -49,24 +53,43 @@ func ReadFileChecksums(r io.Reader) (*FileChecksums, error) {
 		if err != nil {
 			return nil, err
 		}
-		fileChecksums.Entries = append(fileChecksums.Entries, &FileChecksum{
+		checksums.Entries = append(checksums.Entries, &ChecksumEntry{
 			Checksum: checksum,
 			Filename: parts[1],
 		})
 	}
 
-	return &fileChecksums, nil
+	return checksums, nil
 }
 
-func (checksums *FileChecksums) GetEntry(filename string) *FileChecksum {
+func (checksums *Checksums) Check(directory string) (int, error) {
+	count := 0
 	for _, entry := range checksums.Entries {
-		if entry.Filename == filename {
-			return entry
-		} else if filepath.Dir(entry.Filename) == "." && filepath.Base(entry.Filename) == filename {
-			return entry
+		path := filepath.Join(directory, entry.Filename)
+		_, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			// do nothing
+		} else if err != nil {
+			return count, err
+		} else {
+			alg := checksums.Algorithm
+			if alg == "" {
+				alg = DetectChecksumAlgorithm(entry.Checksum)
+			}
+			if alg == "" {
+				return count, fmt.Errorf("could not detect checksum algorithm")
+			}
+			checksum, err := CalcFileChecksum(path, alg)
+			if err != nil {
+				return count, err
+			}
+			if !bytes.Equal(checksum, entry.Checksum) {
+				return count, fmt.Errorf("checksum mismatch")
+			}
+			count++
 		}
 	}
-	return nil
+	return count, nil
 }
 
 func CalcFileChecksum(path string, alg string) ([]byte, error) {
@@ -82,22 +105,9 @@ func CalcFileChecksum(path string, alg string) ([]byte, error) {
 }
 
 func CalcChecksum(r io.Reader, alg string) ([]byte, error) {
-	var hasher hash.Hash
-	switch alg {
-	case "md5":
-		hasher = md5.New()
-	case "sha1":
-		hasher = sha1.New()
-	case "sha224":
-		hasher = sha256.New224()
-	case "sha256":
-		hasher = sha256.New()
-	case "sha384":
-		hasher = sha512.New384()
-	case "sha512":
-		hasher = sha512.New()
-	default:
-		return nil, fmt.Errorf("unsupported algorithm")
+	hasher := NewHasher(alg)
+	if hasher == nil {
+		return nil, fmt.Errorf("unsupported hash algorithm")
 	}
 
 	_, err := io.Copy(hasher, r)
@@ -106,4 +116,42 @@ func CalcChecksum(r io.Reader, alg string) ([]byte, error) {
 	}
 
 	return hasher.Sum(nil), nil
+}
+
+func NewHasher(alg string) hash.Hash {
+	switch alg {
+	case "md5":
+		return md5.New()
+	case "sha1":
+		return sha1.New()
+	case "sha224":
+		return sha256.New224()
+	case "sha256":
+		return sha256.New()
+	case "sha384":
+		return sha512.New384()
+	case "sha512":
+		return sha512.New()
+	default:
+		return nil
+	}
+}
+
+func DetectChecksumAlgorithm(checksum []byte) string {
+	switch len(checksum) {
+	case 16:
+		return "md5"
+	case 20:
+		return "sha1"
+	case 28:
+		return "sha224"
+	case 32:
+		return "sha256"
+	case 48:
+		return "sha384"
+	case 64:
+		return "sha512"
+	default:
+		return ""
+	}
 }
