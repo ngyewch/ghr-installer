@@ -7,7 +7,7 @@ require (
 	github.com/google/go-github/v56 v56.0.0
 	github.com/mholt/archiver/v4 v4.0.0-alpha.8
 	github.com/ngyewch/go-versioninfo v1.5.0
-	github.com/spf13/cobra v1.7.0
+	github.com/spf13/cobra v1.8.0
 )
 
 require (
