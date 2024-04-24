@@ -1,4 +1,5 @@
 golang 1.22.2
 task 3.36.0
 goreleaser 1.25.1
+act 0.2.61
 go:github.com/psampaz/go-mod-outdated v0.9.0
